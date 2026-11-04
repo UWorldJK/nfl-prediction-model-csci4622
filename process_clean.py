@@ -44,10 +44,13 @@ opp_strength = opp_strength.rename(columns={'team': 'recent_team'})
 snaps_clean = snaps[['season', 'week', 'player', 'offense_pct']].copy()
 snaps_clean.columns = ['season', 'week', 'player_display_name', 'snap_pct']
 # ── Merge rosters (age, experience, position) ─────────────────
+rosters = rosters.rename(columns={'gsis_id': 'player_id'})
+rosters['age'] = rosters['season'] - pd.to_datetime(rosters['birth_date']).dt.year
 roster_clean = rosters.drop_duplicates(subset=['season', 'player_id'])
 
 # ── Merge everything onto weekly stats ────────────────────────
-df = weekly.copy()
+# nflreadpy names the team column 'team'; the merges below use 'recent_team'
+df = weekly.copy().rename(columns={'team': 'recent_team'})
 df = df.merge(roster_clean[['season', 'player_id', 'age', 'years_exp']],
               on=['season', 'player_id'], how='left')
 df = df.merge(snaps_clean, on=['season', 'week', 'player_display_name'], how='left')
