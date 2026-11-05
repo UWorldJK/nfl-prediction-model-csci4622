@@ -1,4 +1,5 @@
 pandas
+xgboost
 nflreadpy
 matplotlib
 scikit-learn

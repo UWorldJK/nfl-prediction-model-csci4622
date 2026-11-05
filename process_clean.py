@@ -41,8 +41,8 @@ opp_strength['def_pts_allowed_avg'] = (
 opp_strength = opp_strength.rename(columns={'team': 'recent_team'})
 
 # ── Merge snap counts ──────────────────────────────────────────
-snaps_clean = snaps[['season', 'week', 'player', 'offense_pct']].copy()
-snaps_clean.columns = ['season', 'week', 'player_display_name', 'snap_pct']
+snaps_clean = snaps[['game_id', 'team', 'player', 'offense_pct']].copy()
+snaps_clean.columns = ['game_id', 'recent_team', 'player_display_name', 'snap_pct']
 # ── Merge rosters (age, experience, position) ─────────────────
 rosters = rosters.rename(columns={'gsis_id': 'player_id'})
 rosters['age'] = rosters['season'] - pd.to_datetime(rosters['birth_date']).dt.year
@@ -53,42 +53,32 @@ roster_clean = rosters.drop_duplicates(subset=['season', 'player_id'])
 df = weekly.copy().rename(columns={'team': 'recent_team'})
 df = df.merge(roster_clean[['season', 'player_id', 'age', 'years_exp']],
               on=['season', 'player_id'], how='left')
-df = df.merge(snaps_clean, on=['season', 'week', 'player_display_name'], how='left')
+df = df.merge(snaps_clean, on=['game_id', 'recent_team', 'player_display_name'],
+              how='left', validate='many_to_one')
+assert not df.duplicated(['player_id', 'game_id']).any(), 'Expected one row per player-game'
 df = df.merge(opp_strength[['season', 'week', 'recent_team', 'def_pts_allowed_avg']],
               on=['season', 'week', 'recent_team'], how='left')
 
-# ── Target variable: PPR fantasy points ───────────────────────
-# Use fantasy_points_ppr if available, otherwise compute it
-if 'fantasy_points_ppr' in df.columns:
-    df['target'] = df['fantasy_points_ppr']
-else:
-    df['target'] = (
-        df.get('passing_yards', 0) * 0.04 +
-        df.get('passing_tds', 0) * 4 +
-        df.get('interceptions', 0) * -1 +
-        df.get('rushing_yards', 0) * 0.1 +
-        df.get('rushing_tds', 0) * 6 +
-        df.get('receptions', 0) * 1 +       # PPR: 1pt per reception
-        df.get('receiving_yards', 0) * 0.1 +
-        df.get('receiving_tds', 0) * 6
-    )
+# Keep the original receptions, targets, and fantasy_points_ppr columns.
+# The model chooses its outcome by column name; no generic "target" alias.
 
 # ── Rolling features (per player) ─────────────────────────────
 df = df.sort_values(['player_id', 'season', 'week'])
 
-roll_cols = ['target', 'snap_pct']
+roll_cols = ['receptions', 'targets', 'snap_pct']
 for col in roll_cols:
     if col in df.columns:
+        prefix = col if col == 'snap_pct' else f'{col}_prior'
         # Shift 1 so we don't leak current game into features
-        df[f'{col}_avg3'] = (
+        df[f'{prefix}_avg3'] = (
             df.groupby('player_id')[col]
             .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
         )
-        df[f'{col}_avg5'] = (
+        df[f'{prefix}_avg5'] = (
             df.groupby('player_id')[col]
             .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
         )
-        df[f'{col}_std3'] = (
+        df[f'{prefix}_std3'] = (
             df.groupby('player_id')[col]
             .transform(lambda x: x.shift(1).rolling(3, min_periods=1).std())
         )
@@ -113,14 +103,13 @@ df = df.merge(
 )
 df['is_home'] = df['is_home'].fillna(0)
 
-# ── Drop rows missing target ───────────────────────────────────
-df = df.dropna(subset=['target'])
+# Missing outcomes are dropped by the model for its selected outcome.
 
 # ── Filter to skill positions only ────────────────────────────
 skill_positions = ['QB', 'RB', 'WR', 'TE']
 df = df[df['position'].isin(skill_positions)]
 
-# ── Drop rows where player had 0 snaps (DNP) ──────────────────
+# ── Keep rows with matched snap data (including zero snaps) ───
 if 'snap_pct' in df.columns:
     df = df[df['snap_pct'].notna()]
 
